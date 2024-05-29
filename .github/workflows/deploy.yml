@@ -13,6 +13,11 @@ concurrency:
 permissions:
   actions: write
   contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   lint:
@@ -81,65 +86,66 @@ jobs:
       - name: ⚡ Run vitest
         run: npm run test -- --coverage
 
-  playwright:
-    name: 🎭 Playwright
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    steps:
-      - name: ⬇️ Checkout repo
-        uses: actions/checkout@v3
-
-      - name: 🏄 Copy test env vars
-        run: cp .env.example .env
-
-      - name: ⎔ Setup node
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20
-
-      - name: 📥 Download deps
-        uses: bahmutov/npm-install@v1
-
-      - name: 📥 Install Playwright Browsers
-        run: npm run test:e2e:install
-
-      - name: 🛠 Setup Database
-        run: npx prisma migrate deploy
-
-      - name: 🏦 Cache Database
-        id: db-cache
-        uses: actions/cache@v3
-        with:
-          path: prisma/data.db
-          key:
-            db-cache-schema_${{ hashFiles('./prisma/schema.prisma')
-            }}-migrations_${{ hashFiles('./prisma/migrations/*/migration.sql')
-            }}
-
-      - name: 🌱 Seed Database
-        if: steps.db-cache.outputs.cache-hit != 'true'
-        run: npx prisma db seed
-        env:
-          MINIMAL_SEED: true
-
-      - name: 🏗 Build
-        run: npm run build
-
-      - name: 🎭 Playwright tests
-        run: npx playwright test
-
-      - name: 📊 Upload report
-        uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: playwright-report
-          path: playwright-report/
-          retention-days: 30
+# @todo find a way to run tests wth playwright, as we need a database
+#  playwright:
+#    name: 🎭 Playwright
+#    runs-on: ubuntu-22.04
+#    timeout-minutes: 60
+#    steps:
+#      - name: ⬇️ Checkout repo
+#        uses: actions/checkout@v3
+#
+#      - name: 🏄 Copy test env vars
+#        run: cp .env.example .env
+#
+#      - name: ⎔ Setup node
+#        uses: actions/setup-node@v3
+#        with:
+#          node-version: 20
+#
+#      - name: 📥 Download deps
+#        uses: bahmutov/npm-install@v1
+#
+#      - name: 📥 Install Playwright Browsers
+#        run: npm run test:e2e:install
+#
+#      - name: 🛠 Setup Database
+#        run: npx prisma migrate deploy
+#
+#      - name: 🏦 Cache Database
+#        id: db-cache
+#        uses: actions/cache@v3
+#        with:
+#          path: prisma/data.db
+#          key:
+#            db-cache-schema_${{ hashFiles('./prisma/schema.prisma')
+#            }}-migrations_${{ hashFiles('./prisma/migrations/*/migration.sql')
+#            }}
+#
+#      - name: 🌱 Seed Database
+#        if: steps.db-cache.outputs.cache-hit != 'true'
+#        run: npx prisma db seed
+#        env:
+#          MINIMAL_SEED: true
+#
+#      - name: 🏗 Build
+#        run: npm run build
+#
+#      - name: 🎭 Playwright tests
+#        run: npx playwright test
+#
+#      - name: 📊 Upload report
+#        uses: actions/upload-artifact@v3
+#        if: always()
+#        with:
+#          name: playwright-report
+#          path: playwright-report/
+#          retention-days: 30
 
   deploy:
     name: 🚀 Deploy
     runs-on: ubuntu-22.04
-    needs: [lint, typecheck, vitest, playwright]
+    needs: [lint, typecheck, vitest]
     # only build/deploy branches on pushes
     if: ${{ github.event_name == 'push' }}
 
@@ -147,34 +153,61 @@ jobs:
       - name: ⬇️ Checkout repo
         uses: actions/checkout@v4
 
-      - name: 👀 Read app name
-        uses: SebRollen/toml-action@v1.2.0
-        id: app_name
-        with:
-          file: 'fly.toml'
-          field: 'app'
-
       # move Dockerfile to root
       - name: 🚚 Move Dockerfile
         run: |
           mv ./other/Dockerfile ./Dockerfile
           mv ./other/.dockerignore ./.dockerignore
 
-      - name: 🎈 Setup Fly
-        uses: superfly/flyctl-actions/setup-flyctl@1.5
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🚀 Deploy Staging
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-   
+
+      - name: Get current Unix timestamp
+        id: timestamp
+        run: |
+          echo "TIMESTAMP=$(date +%s)" >> $GITHUB_ENV            
+
+      - name: 🚀 Deploy Preview
         if: ${{ github.ref == 'refs/heads/dev' }}
-        run:
-          flyctl deploy --remote-only --build-arg COMMIT_SHA=${{ github.sha }}
-          --app ${{ steps.app_name.outputs.value }}-staging
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: ./
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.run_number }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:preview-${{ env.TIMESTAMP }}
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: 🚀 Deploy Production
         if: ${{ github.ref == 'refs/heads/main' }}
-        run:
-          flyctl deploy --remote-only --build-arg COMMIT_SHA=${{ github.sha }}
-          --build-secret SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: ./
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.run_number }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:prod-${{ env.TIMESTAMP }}
+          labels: ${{ steps.meta.outputs.labels }}

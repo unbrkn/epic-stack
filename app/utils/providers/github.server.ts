@@ -2,7 +2,6 @@ import { createId as cuid } from '@paralleldrive/cuid2'
 import { redirect } from '@remix-run/node'
 import { GitHubStrategy } from 'remix-auth-github'
 import { z } from 'zod'
-import { cache, cachified } from '../cache.server.ts'
 import { connectionSessionStorage } from '../connections.server.ts'
 import { type Timings } from '../timing.server.ts'
 import { type AuthProvider } from './provider.ts'
@@ -48,28 +47,14 @@ export class GitHubProvider implements AuthProvider {
 		providerId: string,
 		{ timings }: { timings?: Timings } = {},
 	) {
-		const result = await cachified({
-			key: `connection-data:github:${providerId}`,
-			cache,
-			timings,
-			ttl: 1000 * 60,
-			swr: 1000 * 60 * 60 * 24 * 7,
-			async getFreshValue(context) {
-				const response = await fetch(
-					`https://api.github.com/user/${providerId}`,
-					{ headers: { Authorization: `token ${process.env.GITHUB_TOKEN}` } },
-				)
-				const rawJson = await response.json()
-				const result = GitHubUserSchema.safeParse(rawJson)
-				if (!result.success) {
-					// if it was unsuccessful, then we should kick it out of the cache
-					// asap and try again.
-					context.metadata.ttl = 0
-				}
-				return result
-			},
-			checkValue: GitHubUserParseResult,
-		})
+		const response = await fetch(
+			`https://api.github.com/user/${providerId}`,
+			{ headers: { Authorization: `token ${process.env.GITHUB_TOKEN}` } },
+		)
+		const rawJson = await response.json()
+		const requestResult = GitHubUserSchema.safeParse(rawJson)
+		const result = GitHubUserParseResult.parse(requestResult)
+
 		return {
 			displayName: result.success ? result.data.login : 'Unknown',
 			link: result.success ? `https://github.com/${result.data.login}` : null,

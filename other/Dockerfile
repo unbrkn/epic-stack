@@ -7,12 +7,12 @@ FROM node:20-bookworm-slim as base
 ENV NODE_ENV production
 
 # Install openssl for Prisma
-RUN apt-get update && apt-get install -y fuse3 openssl sqlite3 ca-certificates
+RUN apt-get update && apt-get install -y openssl ca-certificates
 
 # Install all node_modules, including dev dependencies
 FROM base as deps
 
-WORKDIR /myapp
+WORKDIR /app
 
 ADD package.json package-lock.json .npmrc ./
 RUN npm install --include=dev
@@ -20,9 +20,9 @@ RUN npm install --include=dev
 # Setup production node_modules
 FROM base as production-deps
 
-WORKDIR /myapp
+WORKDIR /app
 
-COPY --from=deps /myapp/node_modules /myapp/node_modules
+COPY --from=deps /app/node_modules /app/node_modules
 ADD package.json package-lock.json .npmrc ./
 RUN npm prune --omit=dev
 
@@ -32,9 +32,9 @@ FROM base as build
 ARG COMMIT_SHA
 ENV COMMIT_SHA=$COMMIT_SHA
 
-WORKDIR /myapp
+WORKDIR /app
 
-COPY --from=deps /myapp/node_modules /myapp/node_modules
+COPY --from=deps /app/node_modules /app/node_modules
 
 ADD prisma .
 RUN npx prisma generate
@@ -48,39 +48,28 @@ RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN \
 
 # Finally, build the production image with minimal footprint
 FROM base
-
-ENV FLY="true"
-ENV LITEFS_DIR="/litefs/data"
-ENV DATABASE_FILENAME="sqlite.db"
-ENV DATABASE_PATH="$LITEFS_DIR/$DATABASE_FILENAME"
-ENV DATABASE_URL="file:$DATABASE_PATH"
-ENV CACHE_DATABASE_FILENAME="cache.db"
-ENV CACHE_DATABASE_PATH="$LITEFS_DIR/$CACHE_DATABASE_FILENAME"
-ENV INTERNAL_PORT="8080"
-ENV PORT="8081"
+ENV PORT="3000"
 ENV NODE_ENV="production"
 # For WAL support: https://github.com/prisma/prisma-engines/issues/4675#issuecomment-1914383246
 ENV PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK = "1"
 
-# add shortcut for connecting to database CLI
-RUN echo "#!/bin/sh\nset -x\nsqlite3 \$DATABASE_URL" > /usr/local/bin/database-cli && chmod +x /usr/local/bin/database-cli
+WORKDIR /app
 
-WORKDIR /myapp
+RUN addgroup --system --gid 1001 remix
+RUN adduser --system --uid 1001 remix
+USER remix
 
-COPY --from=production-deps /myapp/node_modules /myapp/node_modules
-COPY --from=build /myapp/node_modules/.prisma /myapp/node_modules/.prisma
+COPY --from=production-deps --chown=remix:remix /app/node_modules /app/node_modules
+COPY --from=build --chown=remix:remix /app/node_modules/.prisma /app/node_modules/.prisma
 
-COPY --from=build /myapp/server-build /myapp/server-build
-COPY --from=build /myapp/build /myapp/build
-COPY --from=build /myapp/package.json /myapp/package.json
-COPY --from=build /myapp/prisma /myapp/prisma
-COPY --from=build /myapp/app/components/ui/icons /myapp/app/components/ui/icons
-
-# prepare for litefs
-COPY --from=flyio/litefs:0.5.11 /usr/local/bin/litefs /usr/local/bin/litefs
-ADD other/litefs.yml /etc/litefs.yml
-RUN mkdir -p /data ${LITEFS_DIR}
+COPY --from=build --chown=remix:remix /app/server-build /app/server-build
+COPY --from=build --chown=remix:remix /app/build /app/build
+COPY --from=build --chown=remix:remix /app/package.json /app/package.json
+COPY --from=build --chown=remix:remix /app/prisma /app/prisma
+COPY --from=build --chown=remix:remix /app/app/components/ui/icons /app/app/components/ui/icons
 
 ADD . .
 
-CMD ["litefs", "mount"]
+EXPOSE ${PORT}
+RUN npx prisma migrate deploy
+ENTRYPOINT [ "npm", "run", "start"]
