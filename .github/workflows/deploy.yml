@@ -87,6 +87,7 @@ jobs:
         run: npm run test -- --coverage
 
 # @todo find a way to run tests wth playwright, as we need a database
+#  maybe something like this: https://docs.github.com/en/actions/using-containerized-services/creating-postgresql-service-containers
 #  playwright:
 #    name: 🎭 Playwright
 #    runs-on: ubuntu-22.04
