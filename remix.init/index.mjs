@@ -2,10 +2,7 @@ import { execSync } from 'child_process'
 import crypto from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
-
-const escapeRegExp = string =>
-	// $& means the whole matched string
-	string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+import inquirer from 'inquirer'
 
 const getRandomString = length => crypto.randomBytes(length).toString('hex')
 const getRandomString32 = () => getRandomString(32)
@@ -28,12 +25,22 @@ export default async function main({ rootDirectory }) {
 		fs.readFile(PKG_PATH, 'utf-8'),
 	])
 
+	const { databaseUrl } = await inquirer.prompt([
+		{
+			name: 'databaseUrl',
+			type: 'input',
+				default: 'postgresql://username@localhost:5432/database-name?connection_limit=1',
+			message: 'We need a PostgresSQL Database to work with, please enter your connection string:',
+		},
+	])
+
 	const newEnv = env
 		.replace(/^SESSION_SECRET=.*$/m, `SESSION_SECRET="${getRandomString(16)}"`)
 		.replace(
 			/^INTERNAL_COMMAND_TOKEN=.*$/m,
 			`INTERNAL_COMMAND_TOKEN="${getRandomString(16)}"`,
 		)
+		.replace(/^DATABASE_URL=.*$/m, `DATABASE_URL="${databaseUrl}"`)
 
 	const packageJson = JSON.parse(packageJsonString)
 
